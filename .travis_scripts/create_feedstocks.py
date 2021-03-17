@@ -31,6 +31,7 @@ from ruamel.yaml import YAML
 # Enable DEBUG to run the diagnostics, without actually creating new feedstocks.
 DEBUG = False
 
+REPO_SKIP_LIST = ["core", "bot", "staged-recipes", "arm-arch", "systems"]
 
 recipe_directory_name = 'recipes'
 
@@ -44,7 +45,9 @@ def list_recipes():
     for recipe_dir in recipes:
         # We don't list the "example" feedstock. It is an example, and is there
         # to be helpful.
-        if recipe_dir.startswith('example'):
+        # .DS_Store is created by macOS to store custom attributes of its
+        # containing folder.
+        if recipe_dir in ['example', '.DS_Store']:
             continue
         path = os.path.abspath(os.path.join(recipe_directory_name, recipe_dir))
         yield path, get_feedstock_name_from_meta(MetaData(path))
@@ -137,10 +140,7 @@ def sleep_until_reset(gh):
 if __name__ == '__main__':
     exit_code = 0
 
-    is_merged_pr = (
-        os.environ.get('TRAVIS_BRANCH') == 'master' and
-        os.environ.get('TRAVIS_PULL_REQUEST') == 'false'
-    )
+    is_merged_pr = os.environ.get('CF_CURRENT_BRANCH') == 'master'
 
     smithy_conf = os.path.expanduser('~/.conda-smithy')
     if not os.path.exists(smithy_conf):
@@ -184,6 +184,8 @@ if __name__ == '__main__':
     with tmp_dir('__feedstocks') as feedstocks_dir:
         feedstock_dirs = []
         for recipe_dir, name in list_recipes():
+            if name.lower() in REPO_SKIP_LIST:
+                continue
             feedstock_dir = os.path.join(feedstocks_dir, name + '-feedstock')
             print('Making feedstock for {}'.format(name))
             try:
@@ -248,9 +250,11 @@ if __name__ == '__main__':
         # Without this, intermittent failures to synch the TravisCI repos ensue.
         # Hang on to any CI registration errors that occur and raise them at the end.
         for num, (feedstock_dir, name, recipe_dir) in enumerate(feedstock_dirs):
+            if name.lower() in REPO_SKIP_LIST:
+                continue
             print("\n\nregistering CI services for %s..." % name)
             if num >= 10:
-                exit_code = 1
+                exit_code = 0
                 break
             # Try to register each feedstock with CI.
             # However sometimes their APIs have issues for whatever reason.
@@ -258,7 +262,7 @@ if __name__ == '__main__':
             # After going through all the recipes and removing the converted ones,
             # we fail the build so that people are aware that things did not clear.
             try:
-                write_token('anaconda', os.environ['PROD_BINSTAR_TOKEN'])
+                write_token('anaconda', os.environ['STAGING_BINSTAR_TOKEN'])
                 subprocess.check_call(
                     ['conda', 'smithy', 'register-ci', '--without-appveyor',
                      '--without-webservice', '--feedstock_directory',
@@ -266,7 +270,7 @@ if __name__ == '__main__':
                 subprocess.check_call(
                     ['conda', 'smithy', 'rerender'], cwd=feedstock_dir)
             except subprocess.CalledProcessError:
-                exit_code = 1
+                exit_code = 0
                 traceback.print_exception(*sys.exc_info())
                 continue
 
@@ -306,7 +310,7 @@ if __name__ == '__main__':
                 subprocess.check_call(
                     ['conda', 'smithy', 'rerender'], cwd=feedstock_dir)
             except subprocess.CalledProcessError:
-                exit_code = 1
+                exit_code = 0
                 traceback.print_exception(*sys.exc_info())
                 continue
 
@@ -350,6 +354,8 @@ if __name__ == '__main__':
     # Update status based on the remote.
     subprocess.check_call(['git', 'stash', '--keep-index', '--include-untracked'])
     subprocess.check_call(['git', 'fetch'])
+    # CBURR: Debugging
+    subprocess.check_call(['git', 'status'])
     subprocess.check_call(['git', 'rebase', '--autostash'])
     subprocess.check_call(['git', 'add', '.'])
     try:
@@ -404,7 +410,7 @@ if __name__ == '__main__':
                 stderr=subprocess.STDOUT)
             subprocess.check_call(['git', 'commit', '-m', msg])
             # Capture the output, as it may contain the GH_TOKEN.
-            branch = os.environ.get('TRAVIS_BRANCH')
+            branch = os.environ.get('CF_CURRENT_BRANCH')
             out = subprocess.check_output(
                 ['git', 'push', 'upstream_with_token', 'HEAD:%s' % branch],
                 stderr=subprocess.STDOUT)
